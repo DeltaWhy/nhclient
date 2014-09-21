@@ -52,7 +52,7 @@ class NetherHub(object):
                     del(last_seen[(ip, port)])
     def subscribe_games(self):
         r = redis.StrictRedis(host='gravel.miscjunk.net')
-        self.notifier.notify("Connected to the NetherHub")
+        gobject.idle_add(self.notifier.notify, "Connected to the NetherHub")
         for k in r.keys("netherhub:game:*"):
             j = json.loads(r.get(k))
             if j['user'] == self.user:
@@ -87,6 +87,8 @@ class NetherHub(object):
             portal.close()
             del(self._portals[(ip,port)])
     def start_broadcast(self, user, motd, ip, port):
+        if (ip,port) in self._broadcasters:
+            return
         self.notifier.notify("%s is playing %s"%(user,motd))
         self._broadcasters[(ip,port)] = Broadcaster(motd, ip, port)
     def stop_broadcast(self, ip, port):
@@ -108,7 +110,7 @@ class Portal(object):
         self.motd = motd
         self.ip = ip
         self.port = port
-        cmd = "lib/portal" if windows else "portal"
+        cmd = "portal"
         self.popen = subprocess.Popen((cmd, "-s", "portal.netherhubmc.com:9000", "-t", "%s:%d"%(ip,port), "-m", motd, "-a", self.user))
     def close(self):
         print "closing Portal %s:%d"%(self.ip,self.port)
@@ -124,21 +126,22 @@ class Broadcaster(object):
         self.popen = None
         self._stop = False
         self._thread = threading.Thread(target=self.broadcast)
+        self._thread.daemon = False
         self._thread.start()
     def broadcast(self):
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
         sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 2)
         lport = self._find_open_port()
-        cmd = "lib/ncat" if windows else "ncat"
-        self.popen = subprocess.Popen((cmd, '-k', '-l', '-p %d'%lport, '--sh-exec', '%s %s %d'%(cmd, self.ip,self.port)))
+        self.popen = subprocess.Popen(("ncat", '-k', '-l', '-p %d'%lport, '--sh-exec', '%s %s %d'%("ncat", self.ip,self.port)))
         while not(self._stop):
             sock.sendto("[MOTD]%s[/MOTD][AD]%d[/AD]NetherHub"%(self.motd,lport), ('224.0.2.60', 4445))
             time.sleep(3)
     def close(self):
         self._stop = True
         print "closing Broadcaster %s:%d"%(self.ip,self.port)
-        self.popen.terminate()
-        self.popen.wait()
+        if self.popen:
+            self.popen.terminate()
+            self.popen.wait()
         print "closed Broadcaster %s:%d"%(self.ip,self.port)
     def _find_open_port(self):
         port = random.randrange(1024, 65535)
@@ -147,6 +150,8 @@ class Broadcaster(object):
         return port
 
 if __name__ == "__main__":
+    if windows:
+        os.chdir("lib")
     nh = NetherHub(sys.argv[1])
     signal.signal(signal.SIGINT, gtk.main_quit)
     gtk.main()
