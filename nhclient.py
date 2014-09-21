@@ -5,7 +5,7 @@ pygtk.require('2.0')
 import gobject, gtk
 gtk.gdk.threads_init()
 
-import os, re, signal, socket, struct, subprocess, threading, time
+import json, os, re, signal, socket, struct, subprocess, threading, time
 import redis
 from notifier import Notifier
 
@@ -54,6 +54,21 @@ class NetherHub(object):
         for k in r.keys("netherhub:game:*"):
             motd = r.get(k)
             gobject.idle_add(self.start_broadcast, motd, '104.131.240.223', int(k.split(':')[-1]))
+        pubsub = r.pubsub()
+        pubsub.subscribe(('netherhub:game_opens','netherhub:game_closes'))
+        for item in pubsub.listen():
+            if item['type'] != 'message':
+                continue
+            if item['channel'] == 'netherhub:game_opens':
+                j = json.loads(item['data'])
+                motd = j['motd']
+                ip = '104.131.240.223'
+                port = int(j['addr'].split(':')[-1])
+                gobject.idle_add(self.start_broadcast, motd, ip, port)
+            elif item['channel'] == 'netherhub:game_closes':
+                ip = '104.131.240.223'
+                port = int(item['data'].split(':')[-1])
+                gobject.idle_add(self.stop_broadcast, ip, port)
     def start_portal(self, motd, ip, port):
         self.notifier.notify("Broadcasting %s"%motd)
         self._portals[(ip,port)] = Portal(motd, ip, port)
