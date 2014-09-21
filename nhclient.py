@@ -6,6 +6,7 @@ import gobject, gtk
 gtk.gdk.threads_init()
 
 import os, re, signal, socket, struct, subprocess, threading, time
+import redis
 from notifier import Notifier
 
 windows = (os.name == 'nt')
@@ -16,9 +17,13 @@ class NetherHub(object):
         self.notifier.notify("App started")
         self._stop = False
         self._portals = {}
+        self._broadcasters = {}
 
         self.lan_listener = threading.Thread(target=self.listen_for_lan_worlds)
         self.lan_listener.start()
+
+        self.redis_listener = threading.Thread(target=self.subscribe_games)
+        self.redis_listener.start()
     def listen_for_lan_worlds(self):
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -44,6 +49,11 @@ class NetherHub(object):
                 if timestamp < time.time() - 10:
                     gobject.idle_add(self.stop_portal, ip, port)
                     del(last_seen[(ip, port)])
+    def subscribe_games(self):
+        r = redis.StrictRedis(host='gravel.miscjunk.net')
+        for k in r.keys("netherhub:game:*"):
+            motd = r.get(k)
+            gobject.idle_add(self.start_broadcast, motd, '104.131.240.223', int(k.split(':')[-1]))
     def start_portal(self, motd, ip, port):
         self.notifier.notify("Broadcasting %s"%motd)
         self._portals[(ip,port)] = Portal(motd, ip, port)
@@ -53,6 +63,15 @@ class NetherHub(object):
             self.notifier.notify("Closing %s"%portal.motd)
             portal.close()
             del(self._portals[(ip,port)])
+    def start_broadcast(self, motd, ip, port):
+        self.notifier.notify("Found %s"%motd)
+        self._broadcasters[(ip,port)] = Broadcaster(motd, ip, port)
+    def stop_broadcast(self, ip, port):
+        if (ip,port) in self._broadcasters:
+            b = self._broadcasters[(ip,port)]
+            self.notifier.notify("%s closed"%b.motd)
+            b.close()
+            del(self._broadcasters[(ip,port)])
 
 class Portal(object):
     def __init__(self, motd, ip, port):
@@ -64,6 +83,24 @@ class Portal(object):
     def close(self):
         self.popen.terminate()
         self.popen.wait()
+
+class Broadcaster(object):
+    def __init__(self, motd, ip, port):
+        self.motd = motd
+        self.ip = ip
+        self.port = port
+        self._stop = False
+        self._thread = threading.Thread(target=self.broadcast)
+        self._thread.start()
+    def broadcast(self):
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+        sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 2)
+        lport = 12345
+        while not(self._stop):
+            sock.sendto("[MOTD]%s[/MOTD][AD]%d[/AD]NetherHub"%(self.motd,lport), ('224.0.2.60', 4445))
+            time.sleep(3)
+    def close(self):
+        self._stop = True
 
 if __name__ == "__main__":
     nh = NetherHub()
