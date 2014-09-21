@@ -5,7 +5,7 @@ pygtk.require('2.0')
 import gobject, gtk
 gtk.gdk.threads_init()
 
-import json, os, random, re, socket, struct, subprocess, sys, threading, time
+import json, os, random, re, signal, socket, struct, subprocess, sys, threading, time
 import redis
 from notifier import Notifier
 
@@ -20,9 +20,11 @@ class NetherHub(object):
         self._broadcasters = {}
 
         self.lan_listener = threading.Thread(target=self.listen_for_lan_worlds)
+        self.lan_listener.daemon = True
         self.lan_listener.start()
 
         self.redis_listener = threading.Thread(target=self.subscribe_games)
+        self.redis_listener.daemon = True
         self.redis_listener.start()
     def listen_for_lan_worlds(self):
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
@@ -36,13 +38,12 @@ class NetherHub(object):
         while not(self._stop):
             try:
                 lancfg, addr = sock.recvfrom(10240)
-                if lancfg.endswith("NetherHub"):
-                    continue
-                motd, port = re.search(r'\[MOTD\](.*?)\[/MOTD\]\[AD\]([0-9]*?)\[/AD\]', lancfg).groups()
-                port = int(port)
-                if not((addr[0], port) in last_seen):
-                    gobject.idle_add(self.start_portal, motd, addr[0], port)
-                last_seen[(addr[0], port)] = time.time()
+                if not(lancfg.endswith("NetherHub")):
+                    motd, port = re.search(r'\[MOTD\](.*?)\[/MOTD\]\[AD\]([0-9]*?)\[/AD\]', lancfg).groups()
+                    port = int(port)
+                    if not((addr[0], port) in last_seen):
+                        gobject.idle_add(self.start_portal, motd, addr[0], port)
+                    last_seen[(addr[0], port)] = time.time()
             except socket.timeout:
                 pass
             for (ip, port), timestamp in last_seen.items():
@@ -91,6 +92,12 @@ class NetherHub(object):
             self.notifier.notify("%s closed"%b.motd)
             b.close()
             del(self._broadcasters[(ip,port)])
+    def close(self):
+        self._stop = True
+        for portal in self._portals.values():
+            portal.close()
+        for b in self._broadcasters.values():
+            b.close()
 
 class Portal(object):
     def __init__(self, user, motd, ip, port):
@@ -101,8 +108,10 @@ class Portal(object):
         cmd = "lib/portal" if windows else "portal"
         self.popen = subprocess.Popen((cmd, "-s", "portal.netherhubmc.com:9000", "-t", "%s:%d"%(ip,port), "-m", motd, "-a", self.user))
     def close(self):
+        print "closing Portal %s:%d"%(self.ip,self.port)
         self.popen.terminate()
         self.popen.wait()
+        print "closed Portal %s:%d"%(self.ip,self.port)
 
 class Broadcaster(object):
     def __init__(self, motd, ip, port):
@@ -124,8 +133,10 @@ class Broadcaster(object):
             time.sleep(3)
     def close(self):
         self._stop = True
+        print "closing Broadcaster %s:%d"%(self.ip,self.port)
         self.popen.terminate()
         self.popen.wait()
+        print "closed Broadcaster %s:%d"%(self.ip,self.port)
     def _find_open_port(self):
         port = random.randrange(1024, 65535)
         while subprocess.call(['ncat', '-w 1', 'localhost', str(port)]) == 0:
@@ -134,4 +145,7 @@ class Broadcaster(object):
 
 if __name__ == "__main__":
     nh = NetherHub(sys.argv[1])
+    signal.signal(signal.SIGINT, gtk.main_quit)
     gtk.main()
+    nh.close()
+    print "exited gtk.main"
