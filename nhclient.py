@@ -3,7 +3,7 @@ pygtk.require('2.0')
 import gobject, gtk
 gtk.gdk.threads_init()
 
-import re, socket, struct, threading, time
+import re, socket, struct, subprocess, threading, time
 from notifier import Notifier
 
 class NetherHub(object):
@@ -11,6 +11,8 @@ class NetherHub(object):
         self.notifier = Notifier()
         self.notifier.notify("App started")
         self._stop = False
+        self._portals = {}
+
         self.lan_listener = threading.Thread(target=self.listen_for_lan_worlds)
         self.lan_listener.start()
     def listen_for_lan_worlds(self):
@@ -30,14 +32,32 @@ class NetherHub(object):
                 motd, port = re.search(r'\[MOTD\](.*?)\[/MOTD\]\[AD\]([0-9]*?)\[/AD\]', lancfg).groups()
                 port = int(port)
                 if not((addr[0], port) in last_seen):
-                    gobject.idle_add(self.notifier.notify, "Found game %s on %s:%d"%(motd, addr[0], port))
+                    gobject.idle_add(self.start_portal, motd, addr[0], port)
                 last_seen[(addr[0], port)] = time.time()
             except socket.timeout:
                 pass
             for (ip, port), timestamp in last_seen.items():
-                if timestamp < time.time() - 20:
-                    gobject.idle_add(self.notifier.notify, "%s:%d closed"%(addr[0], port))
+                if timestamp < time.time() - 10:
+                    gobject.idle_add(self.stop_portal, ip, port)
                     del(last_seen[(ip, port)])
+    def start_portal(self, motd, ip, port):
+        self.notifier.notify("Broadcasting %s"%motd)
+        self._portals[(ip,port)] = Portal(motd, ip, port)
+    def stop_portal(self, ip, port):
+        if (ip,port) in self._portals:
+            portal = self._portals[(ip,port)]
+            self.notifier.notify("Closing %s"%portal.motd)
+            portal.close()
+            del(self._portals[(ip,port)])
+
+class Portal(object):
+    def __init__(self, motd, ip, port):
+        self.motd = motd
+        self.ip = ip
+        self.port = port
+        self.popen = subprocess.Popen(("lib/portal", "-s", "brick.miscjunk.net:9000", "-t", "%s:%d"%(ip,port), "-m", motd))
+    def close(self):
+        self.popen.terminate()
 
 if __name__ == "__main__":
     nh = NetherHub()
