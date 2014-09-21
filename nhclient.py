@@ -1,10 +1,14 @@
+#!/usr/bin/env python2
+
 import pygtk
 pygtk.require('2.0')
 import gobject, gtk
 gtk.gdk.threads_init()
 
-import re, socket, struct, subprocess, threading, time
+import os, re, signal, socket, struct, subprocess, threading, time
 from notifier import Notifier
+
+windows = (os.name == 'nt')
 
 class NetherHub(object):
     def __init__(self):
@@ -55,9 +59,11 @@ class Portal(object):
         self.motd = motd
         self.ip = ip
         self.port = port
-        self.popen = subprocess.Popen(("lib/portal", "-s", "brick.miscjunk.net:9000", "-t", "%s:%d"%(ip,port), "-m", motd))
+        cmd = "lib/portal" if windows else "portal"
+        self.popen = subprocess.Popen((cmd, "-s", "brick.miscjunk.net:9000", "-t", "%s:%d"%(ip,port), "-m", motd))
     def close(self):
         self.popen.terminate()
+        self.popen.wait()
 
 if __name__ == "__main__":
     nh = NetherHub()
