@@ -52,11 +52,12 @@ class NetherHub(object):
                     del(last_seen[(ip, port)])
     def subscribe_games(self):
         r = redis.StrictRedis(host='gravel.miscjunk.net')
+        self.notifier.notify("Connected to the NetherHub")
         for k in r.keys("netherhub:game:*"):
             j = json.loads(r.get(k))
             if j['user'] == self.user:
                 continue
-            gobject.idle_add(self.start_broadcast, j['motd'], '104.131.240.223', int(k.split(':')[-1]))
+            gobject.idle_add(self.start_broadcast, j['user'], j['motd'], '104.131.240.223', int(k.split(':')[-1]))
         pubsub = r.pubsub()
         pubsub.subscribe(('netherhub:game_opens','netherhub:game_closes'))
         for item in pubsub.listen():
@@ -69,22 +70,24 @@ class NetherHub(object):
                 motd = j['motd']
                 ip = '104.131.240.223'
                 port = int(j['addr'].split(':')[-1])
-                gobject.idle_add(self.start_broadcast, motd, ip, port)
+                gobject.idle_add(self.start_broadcast, j['user'], motd, ip, port)
             elif item['channel'] == 'netherhub:game_closes':
                 ip = '104.131.240.223'
                 port = int(item['data'].split(':')[-1])
                 gobject.idle_add(self.stop_broadcast, ip, port)
     def start_portal(self, motd, ip, port):
-        self.notifier.notify("Broadcasting %s"%motd)
+        if motd.startswith(self.user+" - "):
+            motd = motd.replace(self.user+" - ", "", 1)
+        self.notifier.notify("Broadcasting %s to the NetherHub"%motd)
         self._portals[(ip,port)] = Portal(self.user, motd, ip, port)
     def stop_portal(self, ip, port):
         if (ip,port) in self._portals:
             portal = self._portals[(ip,port)]
-            self.notifier.notify("Closing %s"%portal.motd)
+            self.notifier.notify("%s closed"%portal.motd)
             portal.close()
             del(self._portals[(ip,port)])
-    def start_broadcast(self, motd, ip, port):
-        self.notifier.notify("Found %s"%motd)
+    def start_broadcast(self, user, motd, ip, port):
+        self.notifier.notify("%s is playing %s"%(user,motd))
         self._broadcasters[(ip,port)] = Broadcaster(motd, ip, port)
     def stop_broadcast(self, ip, port):
         if (ip,port) in self._broadcasters:
