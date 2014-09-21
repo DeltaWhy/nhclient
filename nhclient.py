@@ -5,16 +5,16 @@ pygtk.require('2.0')
 import gobject, gtk
 gtk.gdk.threads_init()
 
-import json, os, re, signal, socket, struct, subprocess, threading, time
+import json, os, random, re, socket, struct, subprocess, sys, threading, time
 import redis
 from notifier import Notifier
 
 windows = (os.name == 'nt')
 
 class NetherHub(object):
-    def __init__(self):
+    def __init__(self, user):
+        self.user = user
         self.notifier = Notifier()
-        self.notifier.notify("App started")
         self._stop = False
         self._portals = {}
         self._broadcasters = {}
@@ -52,15 +52,19 @@ class NetherHub(object):
     def subscribe_games(self):
         r = redis.StrictRedis(host='gravel.miscjunk.net')
         for k in r.keys("netherhub:game:*"):
-            motd = r.get(k)
-            gobject.idle_add(self.start_broadcast, motd, '104.131.240.223', int(k.split(':')[-1]))
+            j = json.loads(r.get(k))
+            if j['user'] == self.user:
+                continue
+            gobject.idle_add(self.start_broadcast, j['motd'], '104.131.240.223', int(k.split(':')[-1]))
         pubsub = r.pubsub()
         pubsub.subscribe(('netherhub:game_opens','netherhub:game_closes'))
         for item in pubsub.listen():
             if item['type'] != 'message':
                 continue
             if item['channel'] == 'netherhub:game_opens':
-                j = json.loads(item['data'])
+                j = json.loads(r.get(item['data']))
+                if j['user'] == self.user:
+                    continue
                 motd = j['motd']
                 ip = '104.131.240.223'
                 port = int(j['addr'].split(':')[-1])
@@ -71,7 +75,7 @@ class NetherHub(object):
                 gobject.idle_add(self.stop_broadcast, ip, port)
     def start_portal(self, motd, ip, port):
         self.notifier.notify("Broadcasting %s"%motd)
-        self._portals[(ip,port)] = Portal(motd, ip, port)
+        self._portals[(ip,port)] = Portal(self.user, motd, ip, port)
     def stop_portal(self, ip, port):
         if (ip,port) in self._portals:
             portal = self._portals[(ip,port)]
@@ -89,12 +93,13 @@ class NetherHub(object):
             del(self._broadcasters[(ip,port)])
 
 class Portal(object):
-    def __init__(self, motd, ip, port):
+    def __init__(self, user, motd, ip, port):
+        self.user = user
         self.motd = motd
         self.ip = ip
         self.port = port
         cmd = "lib/portal" if windows else "portal"
-        self.popen = subprocess.Popen((cmd, "-s", "brick.miscjunk.net:9000", "-t", "%s:%d"%(ip,port), "-m", motd))
+        self.popen = subprocess.Popen((cmd, "-s", "portal.netherhubmc.com:9000", "-t", "%s:%d"%(ip,port), "-m", motd, "-a", self.user))
     def close(self):
         self.popen.terminate()
         self.popen.wait()
@@ -104,19 +109,29 @@ class Broadcaster(object):
         self.motd = motd
         self.ip = ip
         self.port = port
+        self.popen = None
         self._stop = False
         self._thread = threading.Thread(target=self.broadcast)
         self._thread.start()
     def broadcast(self):
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
         sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 2)
-        lport = 12345
+        lport = self._find_open_port()
+        cmd = "lib/ncat" if windows else "ncat"
+        self.popen = subprocess.Popen((cmd, '-k', '-l', '-p %d'%lport, '--sh-exec', '%s %s %d'%(cmd, self.ip,self.port)))
         while not(self._stop):
             sock.sendto("[MOTD]%s[/MOTD][AD]%d[/AD]NetherHub"%(self.motd,lport), ('224.0.2.60', 4445))
             time.sleep(3)
     def close(self):
         self._stop = True
+        self.popen.terminate()
+        self.popen.wait()
+    def _find_open_port(self):
+        port = random.randrange(1024, 65535)
+        while subprocess.call(['ncat', '-w 1', 'localhost', str(port)]) == 0:
+            port = random.randrange(1024, 65535)
+        return port
 
 if __name__ == "__main__":
-    nh = NetherHub()
+    nh = NetherHub(sys.argv[1])
     gtk.main()
